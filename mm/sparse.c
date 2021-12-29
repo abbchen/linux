@@ -239,9 +239,14 @@ static void __init memory_present(int nid, unsigned long start, unsigned long en
 			      __func__, size, align);
 	}
 #endif
-
-	start &= PAGE_SECTION_MASK;
+    /*
+     * 将可用内存区域memblock.memory中region的起始地址对齐到section，
+     * 假如region的起始地址在某个section的中间位置，也就是section的前面一部分的内存是reserved，
+     * 后面一部分是可用的，那么这个section仍然被标识为上线的，并且这个section中的所有struct page都会被建立
+     */
+    start &= PAGE_SECTION_MASK;
 	mminit_validate_memmodel_limits(&start, &end);
+	/* 将每个region中对应的section上线 */
 	for (pfn = start; pfn < end; pfn += PAGES_PER_SECTION) {
 		unsigned long section = pfn_to_section_nr(pfn);
 		struct mem_section *ms;
@@ -263,11 +268,18 @@ static void __init memory_present(int nid, unsigned long start, unsigned long en
  * This is a convenience function that is useful to mark all of the systems
  * memory as present during initialization.
  */
+/*
+ * 将所有可用的内存区域上线，也就是创建memblock.memory中每个区域所在的mem_section（
+ * 如果配置CONFIG_SPARSEMEM_EXTREME，则动态申请内存创建，否则静态创建）,并设置相应的状态位
+ */
 static void __init memblocks_present(void)
 {
 	unsigned long start, end;
 	int i, nid;
-
+	/*
+	 * 起始和结束参数为memblock.memory中每个region的起始和结束地址，
+	 * nid为region所在的节点ID
+	 */
 	for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, &nid)
 		memory_present(nid, start, end);
 }
@@ -516,13 +528,17 @@ static void __init sparse_init_nid(int nid, unsigned long pnum_begin,
 		pr_err("%s: node[%d] usemap allocation failed", __func__, nid);
 		goto failed;
 	}
+	/* 在NUMA节点内存中一次性申请一个节点上所有section所需的struct page的内存量 */
 	sparse_buffer_init(map_count * section_map_size(), nid);
 	for_each_present_section_nr(pnum_begin, pnum) {
 		unsigned long pfn = section_nr_to_pfn(pnum);
 
 		if (pnum >= pnum_end)
 			break;
-
+		/*
+		 * 分配struct page所需内存，此函数在配置CONFIG_SPARSEMEM_VMEMMAP有不同实现，
+		 * 除分配内存外，还需建立struct page物理内存到vmemmap区的映射页表
+		 */
 		map = __populate_section_memmap(pfn, PAGES_PER_SECTION,
 				nid, NULL);
 		if (!map) {
@@ -537,6 +553,7 @@ static void __init sparse_init_nid(int nid, unsigned long pnum_begin,
 				SECTION_IS_EARLY);
 		usage = (void *) usage + mem_section_usage_size();
 	}
+	/* 释放未使用完的内存 */
 	sparse_buffer_fini();
 	return;
 failed:
@@ -559,7 +576,10 @@ void __init sparse_init(void)
 {
 	unsigned long pnum_end, pnum_begin, map_count = 1;
 	int nid_begin;
-
+	/*
+	 * section上线，如果配置SPARSEMEM_EXTREME，
+	 * 则mem_section动态申请内存，否则静态分配
+	 */
 	memblocks_present();
 
 	pnum_begin = first_present_section_nr();
@@ -576,6 +596,10 @@ void __init sparse_init(void)
 			continue;
 		}
 		/* Init node with sections in range [pnum_begin, pnum_end) */
+		/*
+		 * 分配section中页框的struct page内存，如果配置CONFIG_SPARSEMEM_VMEMMAP，
+		 * 则建立struct page内存区域到vmemmap域的页表
+		 */
 		sparse_init_nid(nid_begin, pnum_begin, pnum_end, map_count);
 		nid_begin = nid;
 		pnum_begin = pnum_end;
